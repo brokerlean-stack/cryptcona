@@ -1,0 +1,70 @@
+const assert = require('node:assert/strict');
+const sharp = require('sharp');
+module.exports = async ({context,client,base,userId,mongoose}) => {
+  const photo = 'data:image/png;base64,'+(await sharp('public/trading-team.png').resize(32,32).png().toBuffer()).toString('base64');
+  const admin = await mongoose.connection.collection('users').findOne({role:'admin'});
+  const post = (request,path,data)=>request.post(base+path,{data});
+  let res = await post(client.request,'/api/messages',{receiverId:String(admin._id),content:'Image test',image:photo});
+  assert.equal(res.status(),200,await res.text());
+  const message = await res.json();
+  assert.match(message.image,/^\/api\/media\/[a-f0-9]{24}$/);
+  for (const request of [client.request,context.request]) {
+    const image = await request.get(base+message.image);
+    assert.equal(image.status(),200);
+    assert.equal(image.headers()['cache-control'],'private, no-store');
+    assert.equal(image.headers()['content-type'],'image/png');
+  }
+  assert.equal((await fetch(base+message.image)).status,401);
+  const stored = await mongoose.connection.collection('messages').findOne({_id:new mongoose.Types.ObjectId(message._id)});
+  assert.equal(stored.image,message.image);
+  const media = await mongoose.connection.collection('media').findOne({_id:new mongoose.Types.ObjectId(message.image.split('/').pop())});
+  assert.ok(media.fileId && media.filePath);
+  const otherId = new mongoose.Types.ObjectId();
+  const foreign = await mongoose.connection.collection('media').insertOne({...media,_id:new mongoose.Types.ObjectId(),ownerId:otherId});
+  assert.equal((await client.request.get(base+'/api/media/'+foreign.insertedId)).status(),404);
+  assert.equal((await post(client.request,'/api/messages',{receiverId:String(admin._id),content:'Bad image',image:'data:image/png;base64,AAAA'})).status(),400);
+  assert.equal((await post(client.request,'/api/messages',{receiverId:String(userId),content:'Forbidden',image:photo})).status(),403);
+  res = await post(context.request,'/api/messages',{receiverId:String(userId),content:'Admin image',image:photo});
+  assert.equal(res.status(),200,await res.text());
+  assert.equal((await client.request.get(base+(await res.json()).image)).status(),200);
+  assert.equal((await post(client.request,'/api/user/settings',{phone:'bad'})).status(),400);
+  const before = await mongoose.connection.collection('users').findOne({_id:new mongoose.Types.ObjectId(userId)});
+  assert.equal(before.verificationStatus,'unverified','Signup must not mark identity documents as reviewed');
+  // Older accounts were automatically marked verified without documents.
+  await mongoose.connection.collection('users').updateOne({_id:before._id},{$set:{verificationStatus:'verified'}});
+  assert.equal((await (await client.request.get(base+'/api/dashboard')).json()).user.verificationStatus,'unverified');
+  const page=await client.newPage();
+  await page.goto(base+'/dashboard/profile');
+  await page.getByLabel('Full name',{exact:true}).fill('Profile Test User');
+  await page.getByLabel('Phone number',{exact:true}).fill('+234 800 000 0000');
+  const picker=page.waitForEvent('filechooser');
+  await page.getByRole('button',{name:'Change profile photo',exact:true}).click();
+  await (await picker).setFiles({name:'avatar.png',mimeType:'image/png',buffer:Buffer.from(photo.split(',')[1],'base64')});
+  await page.getByRole('button',{name:'Save profile',exact:true}).click();
+  await page.getByText('Profile saved successfully.',{exact:true}).waitFor();
+  await page.getByAltText('Account profile photo',{exact:true}).waitFor();
+  assert.match(await page.getByAltText('Account profile photo',{exact:true}).getAttribute('src'),/^http/);
+  await page.reload();
+  await page.getByLabel('Full name',{exact:true}).waitFor();
+  assert.equal(await page.getByLabel('Full name',{exact:true}).inputValue(),'Profile Test User');
+  assert.equal(await page.getByLabel('Phone number',{exact:true}).inputValue(),'+234 800 000 0000');
+  assert.match(await page.getByAltText('Your profile photo').getAttribute('src'),/^http/);
+  await page.setViewportSize({width:390,height:844});
+  assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+  await page.screenshot({path:'test-results/profile-edit-mobile.png',fullPage:true});
+  await page.close();
+  res = await post(client.request,'/api/user/kyc',{frontImage:photo,backImage:photo,selfieImage:photo});
+  assert.equal(res.status(),200,await res.text());
+  const user = await mongoose.connection.collection('users').findOne({_id:new mongoose.Types.ObjectId(userId)});
+  assert.equal(user.name,'Profile Test User');
+  assert.equal(user.phone,'+234 800 000 0000');
+  assert.ok(user.profilePhoto.startsWith('http'));
+  assert.equal(user.verificationStatus,'pending');
+  assert.equal((await post(client.request,'/api/user/kyc',{frontImage:photo,backImage:photo,selfieImage:photo})).status(),409);
+  for(const key of ['kycFront','kycBack','kycSelfie']) {
+    assert.match(user[key],/^\/api\/media\//);
+    assert.equal((await context.request.get(base+user[key])).status(),200);
+    assert.equal((await fetch(base+user[key])).status,401);
+  }
+  console.log('ImageKit mocked integration passed: images stored as references, private access, invalid uploads, support replies, identity documents.');
+};

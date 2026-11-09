@@ -1,0 +1,100 @@
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const { randomUUID } = require('node:crypto');
+const mongoose = require('mongoose');
+const { MongoMemoryReplSet } = require('mongodb-memory-server');
+const loader = require('./load-source.cjs');
+const market = loader()('src/lib/marketData.ts');
+const math = loader()('src/lib/tradingMath.ts');
+function snapshot(price = 100000) {
+  const q = { price, bid: price-1, ask: price+1, change: 0, fetchedAt: Date.now(), source: 'test' };
+  return { quotes: { BTC:q, ETH:q, SOL:q, EUR:q, GBP:q }, fetchedAt: Date.now(), stale:false };
+}
+test('market provider rejects malformed prices and refuses stale execution quotes', async () => {
+  assert.throws(() => market.parseTickers({error:[],result:{}}), /Invalid market quote/);
+  const ticks = Object.fromEntries(Object.values(market.MARKET_PAIRS).map(p=>[p,{c:['100'],b:['99'],a:['101'],o:'98'}]));
+  assert.equal(market.parseTickers({error:[],result:ticks}).quotes.BTC.price,100);
+  assert.throws(() => market.requireQuote({...snapshot(),stale:true},'BTC'), /fresh/);
+  const old=snapshot();old.quotes.BTC.fetchedAt-=60000;
+  assert.throws(() => market.requireQuote(old,'BTC'), /fresh/);
+  let calls=0;
+  const failed=loader({}, {fetch:async()=>{calls++;throw new Error('offline')}})('src/lib/marketData.ts');
+  const result=await failed.getMarket();assert.equal(result.stale,true);assert.equal(Object.keys(result.quotes).length,0);assert.equal(calls,2);
+});
+test('position math preserves currency, lot units, long/short P&L and margin loss cap', () => {
+  const q=math.orderTerms('BTC',.001,100000,1500,'NGN');assert.equal(q.margin,75000);
+  const p={entry:100000,units:.001,margin:75000,side:'BUY',fxRate:1500,currency:'NGN'};
+  assert.equal(math.positionProfit(p,100100),150);
+  assert.equal(math.positionProfit({...p,side:'SELL'},100100),-150);
+  assert.equal(math.positionProfit(p,1),-75000);
+  assert.equal(math.orderTerms('EUR',.01,1.1,1,'USD').units,1000);
+  assert.throws(()=>math.orderTerms('BTC',-.1,100,1,'USD'));
+  assert.equal(math.moneyRound(.00000012,'BTC'),.00000012);
+  assert.equal(math.orderTerms('SOL',1001.12345,1,1,'USD').lots,1001.12345);
+  for(const size of [0,-1,NaN,Infinity,Number.MAX_VALUE]) assert.throws(()=>math.orderTerms('BTC',size,100,1,'USD'));
+  const amount=math.sizedOrderTerms({asset:'BTC',sizingMode:'amount',amount:123.45,lots:999},100,1,'USD');
+  assert.equal(amount.margin,123.45);assert.equal(amount.lots,2.469);
+  assert.equal(math.sizedOrderTerms({asset:'EUR',sizingMode:'amount',amount:500},1.1,1500,'NGN').margin,500);
+  assert.equal(math.sizedOrderTerms({asset:'BTC',sizingMode:'amount',amount:.00000012},100000,1/100000,'BTC').margin,.00000012);
+  for(const amount of [0,-1,NaN,Infinity,1.001,'10']) assert.throws(()=>math.sizedOrderTerms({asset:'BTC',sizingMode:'amount',amount},100,1,'USD'));
+  assert.throws(()=>math.sizedOrderTerms({asset:'BTC',sizingMode:'unknown',lots:1},100,1,'USD'));
+});
+test('shared ledger atomically reserves, settles once, persists, isolates users and blocks overspending', async () => {
+  const mongo=await MongoMemoryReplSet.create({replSet:{count:1},binary:{version:'8.0.17'}});
+  try {
+    await mongoose.connect(mongo.getUri(),{dbName:'paper_ledger_test'});
+    const load=loader({'./marketData':{...market,getConversion:async currency=>({rate:currency==='NGN'?1500:1,date:'test',source:'test'})}});
+    const User=load('src/models/User.ts').default, Position=load('src/models/PaperPosition.ts').default, Trade=load('src/models/Trade.ts').default;
+    await Promise.all([User.init(),Position.init(),Trade.init()]);
+    const ledger=load('src/lib/paperTrading.ts');
+    const user=await User.create({name:'Test',email:'ledger@example.test',password:'hashed-test',status:'active',currency:'USD',balance:1000});
+    const id=String(user._id), order={asset:'BTC',side:'BUY',lots:.001,duration:0,requestId:randomUUID(),entry:1,pnl:999999};
+    const opened=await Promise.all([ledger.openPaperPosition(id,order,snapshot()),ledger.openPaperPosition(id,order,snapshot())]);
+    assert.equal(String(opened[0]._id),String(opened[1]._id));
+    let s=await ledger.tradingSnapshot(id,snapshot());assert.equal(s.available,950);assert.equal(s.margin,50);assert.equal(s.equity,1000);assert.equal(s.history.length,0);
+    assert.equal(s.positions[0].entry,100000);
+    await assert.rejects(ledger.closePaperPosition(String(new mongoose.Types.ObjectId()),String(opened[0]._id),snapshot()),/not found/);
+    await Promise.all([ledger.closePaperPosition(id,String(opened[0]._id),snapshot(100100)),ledger.closePaperPosition(id,String(opened[0]._id),snapshot(100100))]);
+    s=await ledger.tradingSnapshot(id,snapshot(100100));assert.equal(s.available,1000.1);assert.equal(s.history.length,1);assert.equal(s.realized,.1);assert.equal(await Trade.countDocuments({status:'WIN'}),1);
+    await assert.rejects(ledger.openPaperPosition(id,{...order,requestId:randomUUID()},{...snapshot(),stale:true}),/fresh/);
+    await User.updateOne({_id:id},{$set:{balance:100}});
+    const concurrent=await Promise.allSettled(Array.from({length:5},()=>ledger.openPaperPosition(id,{...order,requestId:randomUUID()},snapshot())));
+    assert.equal(concurrent.filter(r=>r.status==='fulfilled').length,2);
+    s=await ledger.tradingSnapshot(id,snapshot());assert.equal(s.available,0);assert.equal(s.positions.length,2);
+    await Position.updateMany({userId:id,status:'OPEN'},{$set:{expiresAt:new Date(Date.now()-1000)}});
+    await ledger.settlePaperPositions(id,{...snapshot(),stale:true});assert.equal(await Position.countDocuments({status:'OPEN'}),2);
+    await ledger.settlePaperPositions(id,snapshot(99900));
+    s=await ledger.tradingSnapshot(id,snapshot());assert.equal(s.available,99.8);assert.equal(s.positions.length,0);
+    const ngn=await User.create({name:'NGN',email:'ngn@example.test',password:'test',status:'active',currency:'NGN',balance:100000});
+    const n=await ledger.openPaperPosition(String(ngn._id),{...order,requestId:randomUUID()},snapshot());
+    assert.equal(n.margin,75000);await ledger.closePaperPosition(String(ngn._id),String(n._id),snapshot(100100));
+    assert.equal((await User.findById(ngn._id)).balance,100150);
+    const sizing=await User.create({name:'Sizing',email:'sizing@example.test',password:'test',status:'active',currency:'USD',balance:5000});
+    const large=await ledger.openPaperPosition(String(sizing._id),{...order,lots:1000,requestId:randomUUID()},snapshot(1));
+    assert.equal(large.lots,1000);assert.equal(large.margin,500);
+    await ledger.closePaperPosition(String(sizing._id),String(large._id),snapshot(1));
+    const amountOrder={...order,sizingMode:'amount',amount:123.45,lots:999,requestId:randomUUID()};
+    const amounts=await Promise.all([ledger.openPaperPosition(String(sizing._id),amountOrder,snapshot(100)),ledger.openPaperPosition(String(sizing._id),amountOrder,snapshot(100))]);
+    assert.equal(String(amounts[0]._id),String(amounts[1]._id));assert.equal(amounts[0].margin,123.45);assert.equal(amounts[0].lots,2.469);
+    assert.equal((await User.findById(sizing._id)).balance,4876.55);
+    await assert.rejects(ledger.openPaperPosition(String(sizing._id),{...amountOrder,amount:5000,requestId:randomUUID()},snapshot(100)),/Insufficient/);
+    await ledger.closePaperPosition(String(sizing._id),String(amounts[0]._id),snapshot(110));
+    assert.equal(Math.round((await User.findById(sizing._id)).balance*100),502469);
+    const beforeFailure=(await User.findById(id)).balance;
+    const originalCreate=Trade.create;
+    Trade.create=async()=>{throw new Error('ledger write failed')};
+    try { await assert.rejects(ledger.openPaperPosition(id,{...order,requestId:randomUUID()},snapshot()),/ledger write failed/); }
+    finally { Trade.create=originalCreate; }
+    assert.equal((await User.findById(id)).balance,beforeFailure,'Failed ledger write rolls back reserved margin');
+    assert.equal(await Position.countDocuments({userId:id,status:'OPEN'}),0);
+    await User.updateOne({_id:id},{$set:{balance:100,withdrawalCode:'test-code'}});
+    const route=loader({'next-auth':{getServerSession:async()=>({user:{id}})},'@/lib/auth':{authOptions:{}},'@/lib/db':async()=>{}})('src/app/api/wallet/withdraw/route.ts');
+    const request=amount=>new Request('http://test/api/wallet/withdraw',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({amount,method:'TEST',walletAddress:'test',withdrawalCode:'test-code'})});
+    assert.equal((await route.POST(request(-100))).status,400);
+    await Promise.allSettled([ledger.openPaperPosition(id,{...order,requestId:randomUUID()},snapshot()),route.POST(request(60))]);
+    const balance=(await User.findById(id)).balance;
+    const reserved=(await Position.find({userId:id,status:'OPEN'})).reduce((n,p)=>n+p.margin,0);
+    const withdrawn=(await mongoose.connection.collection('withdrawals').find({userId:user._id}).toArray()).reduce((n,w)=>n+w.amountLocal,0);
+    assert.ok(balance>=0);assert.equal(balance+reserved+withdrawn,100,'Trade and withdrawal cannot spend the same funds');
+  } finally { await mongoose.disconnect(); await mongo.stop(); }
+});
