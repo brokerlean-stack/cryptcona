@@ -3,7 +3,7 @@ import type { HTMLAttributes } from "react";
 // All disclosure copy lives here, including the compact badge and
 // context-specific explanations. Do not duplicate these strings in consumers.
 const disclosure = "Real trading — live funds, actual money at risk";
-export const realCopy = {
+export const demoCopy = {
   closeDetails: "Close real trading details",
   profileCreditError:
     "Copying has stopped, the profile is paused, or this profile is not eligible for copy trading. Only verified live profiles can generate withdrawable credits. Refresh the member list.",
@@ -30,9 +30,9 @@ export const realCopy = {
     "Positions and history are saved to your account across devices. Timers keep their deadlines. Stops, limits and expired timers settle at the next live market quote. There is no background execution worker. All balances reflect real funds on the server.",
 } as const;
 type Props = HTMLAttributes<HTMLSpanElement> & {
-  variant?: keyof typeof realCopy | "badge";
+  variant?: keyof typeof demoCopy | "badge";
 };
-export default function Real({
+export default function Demo({
   variant = "standard",
   className = "",
   ...props
@@ -41,7 +41,7 @@ export default function Real({
     <span
       {...props}
       title={variant === "badge" ? disclosure : undefined}
-      className={`real-disclosure ${variant === "badge" ? "real-badge" : ""} ${className}`}
+      className={`demo-disclosure ${variant === "badge" ? "demo-badge" : ""} ${className}`}
     >
       {variant === "badge" ? (
         <>
@@ -52,7 +52,7 @@ export default function Real({
           </span>
         </>
       ) : (
-        realCopy[variant]
+        demoCopy[variant]
       )}
     </span>
   );
