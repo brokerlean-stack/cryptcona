@@ -260,7 +260,6 @@ export default function RegisterContent() {
               Profit goal (optional, in your account currency)
               <input aria-label="Profit goal" type="number" min="0.01" max="1000000000000" step="0.01" value={form.profitGoal} onChange={e => setForm({...form, profitGoal:e.target.value})} placeholder="For example, 1000" />
             </label>
-            <p className="text-xs leading-6 text-zinc-400">Your goal tracks recorded results and manual profit credits. It does not guarantee returns or restrict withdrawals. You can turn it off at any time; choose a new goal after reaching or disabling it.</p>
             <label className="flex gap-3 items-start text-xs text-zinc-400">
               <input
                 type="checkbox"

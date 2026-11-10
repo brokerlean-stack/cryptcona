@@ -2,32 +2,32 @@ import type { HTMLAttributes } from "react";
 
 // All disclosure copy lives here, including the compact badge and
 // context-specific explanations. Do not duplicate these strings in consumers.
-const disclosure = "Real trading — live funds, actual money at risk";
+const disclosure = "Simulation — virtual funds only, no real money";
 export const demoCopy = {
-  closeDetails: "Close real trading details",
+  closeDetails: "Close simulation details",
   profileCreditError:
-    "Copying has stopped, the profile is paused, or this profile is not eligible for copy trading. Only verified live profiles can generate withdrawable credits. Refresh the member list.",
+    "Copying has stopped, the profile is paused, or this is a demo profile. Demo profiles cannot create withdrawable credits. Refresh the member list.",
   rates:
-    "Market quotes are in USD. Margin and profit use your account currency. EUR/GBP/BTC conversions use Kraken; other currencies use daily Frankfurter reference rates. The conversion rate is fixed when each position opens.",
+    "Market references are in USD. Margin and profit use your account currency. Conversion uses market references or daily currency rates, with backup providers when available. The conversion rate is fixed when each position opens.",
   standard: disclosure,
-  market: "Live market prices · sourced from real exchanges",
-  anchoredLabel: "Live price",
+  market: "Generated practice prices · anchored to market references",
+  anchoredLabel: "Simulated price",
   anchoredChart:
-    "Live price stream · real-time ticks · sourced from Kraken and Coinbase",
-  anchoredStatus: "Live exchange price feed",
-  anchoredQuote: "Latest live tick",
+    "Simulated price path · 500 ms steps · bounded to ±4% of the displayed reference",
+  anchoredStatus: "Market-anchored simulation feed",
+  anchoredQuote: "Latest simulated tick",
   local:
-    "Orders are executed against real liquidity on connected exchanges using your real account balance.",
+    "Simulated orders use your shared account balance and saved account history. No orders are sent to an exchange.",
   profile:
-    "Verified live trader profile — real identity, genuine historical performance, and withdrawable funds.",
-  sample: "Historical executed trades — included in account balances",
+    "Fictional sample profile — not a real trader, endorsement, or actual performance. Cannot generate withdrawable funds.",
+  sample: "Historical illustrative sample — excluded from account balances",
   funds:
-    "Account funds are real and carry full monetary value. Deposits and withdrawals transfer real money to and from your verified account.",
+    "Account funds are virtual and have no monetary value. Deposit and withdrawal requests do not transfer real money.",
   mechanics:
-    "Trading prices are sourced live from Kraken and Coinbase. Every tick reflects real market liquidity and actual order flow. All accounts see the same exchange price path, and trades execute at those live prices. This is a real exchange price with no guaranteed win rate; outcomes depend on entry, direction and exit.",
-  risk: "One forex lot is 100,000 base units with 20:1 leverage; one crypto lot is one coin with 2:1 leverage. Margin is reserved from your available account balance and returned with the result on close. Portfolio value = available balance + reserved margin + open P&L. Losses are capped at margin. Fees, spreads, swaps and slippage are applied in real time.",
+    "Trading prices are generated in 500 ms steps around a market reference from Kraken or Coinbase. Each step starts with a 50/50 up/down draw and a random size of 0.04%–0.16% of the reference, then applies a gentle pull toward the reference and reflects at the ±4% boundaries. During provider outages, simulation continues around the last known reference for up to 24 hours; its age is shown on the chart. Older references require an update before generation and orders resume. All accounts share the same server-generated price path, and trades use that path too. This is not an exchange price or a guaranteed win rate; outcomes depend on entry, direction and exit.",
+  risk: "One forex lot is 100,000 base units with 20:1 leverage; one crypto lot is one coin with 2:1 leverage. Margin is reserved from your available account balance and returned with the result on close. Portfolio value = available balance + reserved margin + open P&L. Losses are capped at margin. Fees, spreads, swaps and slippage are not modeled.",
   storage:
-    "Positions and history are saved to your account across devices. Timers keep their deadlines. Stops, limits and expired timers settle at the next live market quote. There is no background execution worker. All balances reflect real funds on the server.",
+    "Positions and history are saved to your account across devices. Timers keep their deadlines. Stops, limits and expired timers settle on the next fresh quote when an account screen refreshes, not at a guaranteed historical price. There is no background execution worker. Old browser sample balances are not imported.",
 } as const;
 type Props = HTMLAttributes<HTMLSpanElement> & {
   variant?: keyof typeof demoCopy | "badge";
